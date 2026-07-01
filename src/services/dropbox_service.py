@@ -9,8 +9,8 @@ logger = logging.getLogger(__name__)
 class DropboxService:
     """
     Servicio para interactuar con Dropbox.
-    Utiliza peticiones HTTP crudas (requests) para listar y descargar, 
-    esquivando los bugs de validación de metadata del SDK oficial de Python.
+    Utiliza el microservicio en Cloud Run para obtener un token siempre válido,
+    y peticiones HTTP crudas para interactuar con la API de Dropbox.
     """
     
     ALLOWED_EXTENSIONS = ('.pdf', '.jpg', '.jpeg', '.png')
@@ -18,18 +18,46 @@ class DropboxService:
     SUPPORTING_DOCS_KEYWORD = 'supporting documents'
 
     def __init__(self):
-        self.token = Config.DROPBOX_TOKEN
+        # Ya no inicializamos el token aquí porque lo pediremos al vuelo
+        pass
+
+    def _get_valid_token(self) -> str:
+        """
+        Obtiene un token de acceso fresco desde el microservicio en Cloud Run.
+        """
+        try:
+            headers = {"Content-Type": "application/json"}
+            payload = {"signature": Config.DROPBOX_API_SECRET_KEY}
+            
+            logger.info("Solicitando token de Dropbox al servicio central...")
+            response = requests.post(
+                Config.DROPBOX_TOKEN_URL, 
+                headers=headers, 
+                json=payload,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"Token obtenido correctamente (Renovado en esta petición: {data.get('refreshed')})")
+                return data.get("access_token")
+            else:
+                logger.error(f"Error obteniendo token del servicio: {response.status_code} - {response.text}")
+                return None
+        except Exception as e:
+            logger.error(f"Excepción al conectar con el servicio de token de Dropbox: {e}")
+            return None
 
     def _contains_keyword(self, name: str, keywords: list) -> bool:
         """Verifica si alguna palabra clave está en el nombre."""
         name_lower = name.lower()
         return any(keyword in name_lower for keyword in keywords)
 
-    def _list_folder_raw(self, path: str, shared_url: str) -> list:
+    def _list_folder_raw(self, path: str, shared_url: str, token: str) -> list:
         """Hace una petición HTTP cruda para listar el contenido de la carpeta."""
         url = "https://api.dropboxapi.com/2/files/list_folder"
         headers = {
-            "Authorization": f"Bearer {self.token}",
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"
         }
         data = {
@@ -44,18 +72,17 @@ class DropboxService:
             
         return response.json().get("entries", [])
 
-    def _download_file_raw(self, shared_url: str, remote_path: str, local_dest: str) -> bool:
+    def _download_file_raw(self, shared_url: str, remote_path: str, local_dest: str, token: str) -> bool:
         """Hace una petición HTTP cruda al endpoint de contenido para descargar el archivo."""
         url = "https://content.dropboxapi.com/2/sharing/get_shared_link_file"
         headers = {
-            "Authorization": f"Bearer {self.token}",
+            "Authorization": f"Bearer {token}",
             "Dropbox-API-Arg": json.dumps({
                 "url": shared_url,
                 "path": remote_path
             })
         }
         
-        # Stream=True es buena práctica para manejo de memoria en archivos grandes
         response = requests.post(url, headers=headers, stream=True)
         
         if response.status_code == 200:
@@ -71,12 +98,16 @@ class DropboxService:
         """
         Navega la carpeta compartida, busca las carpetas objetivo y descarga.
         """
-        if not self.token:
-            raise ValueError("Token de Dropbox no configurado.")
+        # 1. Obtener un token fresco antes de iniciar el proceso
+        token = self._get_valid_token()
+        if not token:
+            logger.error("No se pudo obtener un token de Dropbox válido. Abortando descarga para este cliente.")
+            return []
 
         downloaded_files = []
         try:
-            root_entries = self._list_folder_raw("", shared_url)
+            # Le pasamos el token a nuestras funciones crudas
+            root_entries = self._list_folder_raw("", shared_url, token)
             
             target_folders = []
             found_uscis = False
@@ -104,7 +135,7 @@ class DropboxService:
                 logger.info(f"Explorando subcarpeta encontrada: '{folder_name}'...")
                 subfolder_path = f"/{folder_name}"
                 
-                sub_entries = self._list_folder_raw(subfolder_path, shared_url)
+                sub_entries = self._list_folder_raw(subfolder_path, shared_url, token)
                 
                 for item in sub_entries:
                     if item.get(".tag") == "file":
@@ -116,7 +147,7 @@ class DropboxService:
                             logger.info(f"Descargando: {file_name}...")
                             
                             remote_file_path = f"{subfolder_path}/{file_name}"
-                            success = self._download_file_raw(shared_url, remote_file_path, local_path)
+                            success = self._download_file_raw(shared_url, remote_file_path, local_path, token)
                             
                             if success:
                                 downloaded_files.append(local_path)

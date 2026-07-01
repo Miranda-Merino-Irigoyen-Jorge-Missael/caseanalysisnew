@@ -19,8 +19,9 @@ class Config:
     SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
     SHEET_NAME = os.getenv("SHEET_NAME")
     
-    # Configuración Dropbox
-    DROPBOX_TOKEN = os.getenv("DROPBOX_TOKEN")
+    # Configuración Dropbox (Nuevo servicio de Token)
+    DROPBOX_API_SECRET_KEY = os.getenv("DROPBOX_API_SECRET_KEY")
+    DROPBOX_TOKEN_URL = os.getenv("DROPBOX_TOKEN_URL", "https://accesstokendropbox-223080314602.us-central1.run.app/api/v1/token")
 
     # Archivos de credenciales OAuth
     OAUTH_CREDENTIALS_FILE = BASE_DIR / os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "client_secret.json")
@@ -38,7 +39,7 @@ class Config:
         missing = []
         if not cls.PROJECT_ID: missing.append("PROJECT_ID")
         if not cls.SPREADSHEET_ID: missing.append("SPREADSHEET_ID")
-        if not cls.DROPBOX_TOKEN: missing.append("DROPBOX_TOKEN")
+        if not cls.DROPBOX_API_SECRET_KEY: missing.append("DROPBOX_API_SECRET_KEY")
         
         if missing:
             raise ValueError(f"Faltan variables críticas en el archivo .env: {', '.join(missing)}")
